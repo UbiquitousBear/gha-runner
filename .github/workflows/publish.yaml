@@ -1,0 +1,87 @@
+name: Build/publish all runners
+
+on:
+  workflow_dispatch: # build on demand
+  schedule:
+    - cron: "43 6 * * 0" # build every Sunday at 6:43 AM UTC
+
+jobs:
+  build-all:
+    runs-on: ubuntu-latest # use the GitHub-hosted runner to build the image
+    permissions:
+      contents: write # for uploading the SBOM to the release
+      packages: write # for uploading the finished container
+      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
+      id-token: write # to complete the identity challenge with sigstore/fulcio when running outside of PRs
+      attestations: write # to create the attestations for the container
+    continue-on-error: true
+
+    steps:
+      - name: Checkout the repo
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set version
+        run: echo "VERSION=$(cat ${GITHUB_EVENT_PATH} | jq -r '.release.tag_name')" >> $GITHUB_ENV
+        if: github.event_name == 'release'
+
+      - name: Set short SHA
+        run: echo "SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # - name: Set up QEMU
+      #   uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      #   with:
+      #     platforms: linux/amd64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Set Docker metadata
+        id: docker_meta
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
+        with:
+          images: ghcr.io/UbiquitousBear/gha-runner/wolfi
+          tags: |
+            type=sha,format=long
+            type=raw,value=${{ env.SHA_SHORT }}
+            type=raw,value=latest
+
+      - name: Build and push the containers
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        id: build-and-push
+        with:
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.docker_meta.outputs.tags }}
+
+      - name: Attest the build
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        id: attest
+        with:
+          subject-name: ghcr.io/UbiquitousBear/gha-runner/wolfi
+          subject-digest: ${{ steps.build-and-push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+
+      - name: Log in to GHCR
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Sign the images with GitHub OIDC Token
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          TAGS: ${{ steps.docker_meta.outputs.tags }}
+        run: |
+          images=""
+          for tag in ${TAGS}; do
+            images+="${tag}@${DIGEST} "
+          done
+          cosign sign --yes ${images}
