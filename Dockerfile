@@ -23,6 +23,7 @@ RUN apk add --no-cache \
   helm \
   icu \
   jq \
+  yq \
   krb5-libs \
   lttng-ust \
   nodejs \
