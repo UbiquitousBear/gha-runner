@@ -32,7 +32,8 @@ RUN apk add --no-cache \
   wget \
   unzip \
   yaml-dev \
-  zlib
+  zlib \
+  rsync
 
 RUN export PATH=$HOME/.local/bin:$PATH
 
